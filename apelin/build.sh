@@ -12,20 +12,28 @@ out="${TMPDIR:?}out"
 rm -rf -- "${out:?}"
 mkdir -p "$out"
 
-# A bootstrap clang signs arm64e with an ABI this device's kernel refuses;
-# arm64 builds and runs on both bootstraps.
-ARCH=arm64
 if [ "$APELIN_BOOTSTRAP" = rootless ]; then
     BDEF=-DAPELIN_BOOTSTRAP_ROOTLESS=1
 else
     BDEF=-DAPELIN_BOOTSTRAP_ROOTHIDE=1
 fi
-CFLAGS="-arch $ARCH -fobjc-arc -O2 -Iapp/include -Iapp/daemon $BDEF"
+BASE="-fobjc-arc -O2 -Iapp/include -Iapp/daemon $BDEF"
 
-clang $CFLAGS -framework UIKit -framework Foundation \
-    -o "$out/ellekit-panel" app/App/main.m app/include/EKPanelPaths.m
-clang $CFLAGS -framework Foundation \
-    -o "$out/ekpaneld" app/daemon/ekpaneld.m app/include/EKPanelPaths.m
+# The package is arm64e on roothide and arm64 on rootless, but every binary
+# carries BOTH slices. A bootstrap clang emits arm64e in an ABI this device's
+# kernel rejects ("Bad CPU type"), while an arm64-only binary in an arm64e
+# package would not run on a device that only has arm64e. A universal binary
+# lets each device pick the slice it accepts.
+for slice in arm64 arm64e; do
+    clang -arch $slice $BASE -framework UIKit -framework Foundation \
+        -o "$out/ellekit-panel.$slice" app/App/main.m app/include/EKPanelPaths.m
+    clang -arch $slice $BASE -framework Foundation \
+        -o "$out/ekpaneld.$slice" app/daemon/ekpaneld.m app/include/EKPanelPaths.m
+done
+lipo -create -output "$out/ellekit-panel" "$out/ellekit-panel.arm64" "$out/ellekit-panel.arm64e"
+lipo -create -output "$out/ekpaneld" "$out/ekpaneld.arm64" "$out/ekpaneld.arm64e"
+rm -f "$out/ellekit-panel.arm64" "$out/ellekit-panel.arm64e" \
+      "$out/ekpaneld.arm64" "$out/ekpaneld.arm64e"
 
 # The helper needs no-sandbox: the jailbreak's profile otherwise refuses
 # writes into /basebin. Take the bootstrap's own entitlements when it has them.
