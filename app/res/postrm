@@ -1,0 +1,11 @@
+#!/bin/sh
+# ellekit-panel: stop the helper, with injection left as the user set it.
+set -e
+
+/bin/launchctl bootout system @PREFIX@/Library/LaunchDaemons/wiki.qaq.ellekit-panel.daemon.plist 2>/dev/null || true
+
+if [ -x @PREFIX@/usr/bin/uicache ]; then
+    @PREFIX@/usr/bin/uicache -u wiki.qaq.ellekit-panel >/dev/null 2>&1 || true
+fi
+
+exit 0

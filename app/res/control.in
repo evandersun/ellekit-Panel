@@ -1,0 +1,12 @@
+Package: wiki.qaq.ellekit-panel
+Name: ElleKit Panel
+Version: 1.0
+Architecture: @ARCH@
+Maintainer: evander
+Author: evander
+Section: Tweaks
+Priority: optional
+Icon: https://ellekit.space/logos/logo.png
+Description: An app that turns tweak injection off and on.
+ Creates or removes the marker the jailbreak's systemhook checks before
+ it injects a tweak, through a small root helper.

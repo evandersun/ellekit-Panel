@@ -1,7 +1,8 @@
-build/
-.build/
-launchd-hook/fishhook/*
+# Built binaries
+app/App/ellekit-panel
+app/ekpaneld
+probe/probe_inject
+
+# Apelin
+Builds/
 .DS_Store
-*.deb
-ellekit.xcodeproj/xcuserdata
-ellekit.xcodeproj/project.xcworkspace/xcuserdata
