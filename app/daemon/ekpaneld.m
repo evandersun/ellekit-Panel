@@ -13,19 +13,7 @@
 #import <unistd.h>
 #import <fcntl.h>
 #import <errno.h>
-
-static void EKWriteResult(NSString *state, NSString *message, NSString *marker) {
-    NSString *path = EKPanelBootstrapPath(@EKPANEL_RESULT_PATH);
-    if (path == nil) path = @EKPANEL_RESULT_PATH;
-    NSDictionary *d = @{
-        @EKPANEL_RESULT_STATE : state ?: @"error",
-        @EKPANEL_RESULT_MESSAGE : message ?: @"",
-        @EKPANEL_RESULT_MARKER : marker ?: @"",
-        @EKPANEL_RESULT_TIME : @([[NSDate date] timeIntervalSince1970]),
-    };
-    [d writeToFile:path atomically:YES];
-    chmod(path.fileSystemRepresentation, 0644);
-}
+#import <stdarg.h>
 
 static NSString *markerPath(void) {
     return EKPanelSafeModePath() ?: @EKPANEL_SAFE_MODE_PATH;
@@ -36,95 +24,210 @@ static BOOL markerEnabled(NSString *path) {
     return lstat(path.fileSystemRepresentation, &st) == 0;
 }
 
-// The pid of the process whose name matches `name`, or -1.
-// MAXCOMLEN truncates names in kinfo_proc, so compare up to that length.
-static pid_t EKFindProcess(const char *name) {
-    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
-    size_t size = 0;
-    if (sysctl(mib, 4, NULL, &size, NULL, 0) != 0) return -1;
+// Appends one timestamped line to the log, when logging is on.
+static void EKLog(NSString *format, ...) {
+    if (!EKPanelLoggingEnabled()) return;
 
-    struct kinfo_proc *procs = malloc(size);
-    if (procs == NULL) return -1;
-    if (sysctl(mib, 4, procs, &size, NULL, 0) != 0) {
-        free(procs);
-        return -1;
-    }
+    va_list args;
+    va_start(args, format);
+    NSString *body = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
 
-    pid_t found = -1;
-    size_t count = size / sizeof(struct kinfo_proc);
-    for (size_t i = 0; i < count; i++) {
-        if (strncmp(procs[i].kp_proc.p_comm, name, MAXCOMLEN) == 0) {
-            found = procs[i].kp_proc.p_pid;
-            break;
-        }
-    }
-    free(procs);
-    return found;
+    NSString *path = EKPanelLogPath();
+    if (path == nil) return;
+
+    NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+    fmt.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n",
+                      [fmt stringFromDate:[NSDate date]], body];
+    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+
+    int fd = open(path.fileSystemRepresentation, O_CREAT | O_WRONLY | O_APPEND, 0644);
+    if (fd < 0) return;
+    write(fd, data.bytes, data.length);
+    close(fd);
 }
 
-static int applyAction(NSString *action) {
+static unsigned long long fileSize(NSString *path) {
+    struct stat st;
+    if (path == nil || stat(path.fileSystemRepresentation, &st) != 0) return 0;
+    return (unsigned long long)st.st_size;
+}
+
+// The per-process memory addends, as a plain dictionary.
+static NSDictionary *jetsamTable(void) {
+    NSString *p = EKPanelBootstrapPath(@EKPANEL_JETSAM_PATH);
+    if (p == nil) return @{};
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
+    return [d isKindOfClass:[NSDictionary class]] ? d : @{};
+}
+
+static void EKWriteResult(NSString *state, NSString *message) {
+    NSString *path = EKPanelBootstrapPath(@EKPANEL_RESULT_PATH);
+    if (path == nil) path = @EKPANEL_RESULT_PATH;
+    NSString *marker = markerPath();
+    NSDictionary *d = @{
+        @EKPANEL_RESULT_STATE : state ?: @"error",
+        @EKPANEL_RESULT_MESSAGE : message ?: @"",
+        @EKPANEL_RESULT_MARKER : marker ?: @"",
+        @EKPANEL_RESULT_TIME : @([[NSDate date] timeIntervalSince1970]),
+        @EKPANEL_RESULT_LOGGING : @(EKPanelLoggingEnabled()),
+        @EKPANEL_RESULT_LOGSIZE : @(fileSize(EKPanelLogPath())),
+        @EKPANEL_RESULT_JETSAM : jetsamTable(),
+    };
+    [d writeToFile:path atomically:YES];
+    chmod(path.fileSystemRepresentation, 0644);
+}
+
+// Writes the addend table, dropping entries that are not a number.
+static int applyJetsam(NSDictionary *incoming) {
+    NSString *p = EKPanelBootstrapPath(@EKPANEL_JETSAM_PATH);
+    if (p == nil) {
+        EKWriteResult(@"error", @"Cannot resolve the jetsam file path.");
+        return 1;
+    }
+
+    NSMutableDictionary *clean = [NSMutableDictionary dictionary];
+    for (id key in incoming) {
+        if (![key isKindOfClass:[NSString class]]) continue;
+        id value = incoming[key];
+        if ([value isKindOfClass:[NSNumber class]]) {
+            clean[key] = @([value longLongValue]);
+        }
+    }
+
+    if (clean.count == 0) {
+        unlink(p.fileSystemRepresentation);
+        EKLog(@"jetsam: table cleared");
+        EKWriteResult(markerEnabled(markerPath()) ? @"enabled" : @"disabled",
+                      @"Jetsam table cleared.");
+        return 0;
+    }
+
+    if (![clean writeToFile:p atomically:YES]) {
+        EKWriteResult(@"error", [NSString stringWithFormat:
+            @"Could not write %@ (errno %d).", p, errno]);
+        return 1;
+    }
+    chmod(p.fileSystemRepresentation, 0644);
+
+    NSMutableArray *parts = [NSMutableArray array];
+    for (NSString *key in [clean.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        [parts addObject:[NSString stringWithFormat:@"%@ %+lldMB", key,
+                          [clean[key] longLongValue]]];
+    }
+    EKLog(@"jetsam: saved %@", [parts componentsJoinedByString:@", "]);
+    EKWriteResult(markerEnabled(markerPath()) ? @"enabled" : @"disabled",
+                  @"Jetsam table saved. It applies to processes started from now on.");
+    return 0;
+}
+
+static int applyAction(NSString *action, NSDictionary *request) {
     NSString *p = markerPath();
 
     if ([action isEqualToString:@EKPANEL_ACTION_ENABLE]) {
         if (markerEnabled(p)) {
-            EKWriteResult(@"enabled", @"Injection is already off.", p);
+            EKWriteResult(@"enabled", @"Injection is already off.");
             return 0;
         }
         int fd = open(p.fileSystemRepresentation, O_CREAT | O_WRONLY, 0644);
         if (fd < 0) {
             EKWriteResult(@"error", [NSString stringWithFormat:
-                @"Could not create %@ (errno %d).", p, errno], p);
+                @"Could not create %@ (errno %d).", p, errno]);
             return 1;
         }
         close(fd);
-        EKWriteResult(@"enabled", @"Injection turned off. Restart SpringBoard to apply.", p);
+        EKLog(@"injection: OFF (marker created at %@)", p);
+        EKWriteResult(@"enabled", @"Injection turned off. Restart SpringBoard to apply.");
         return 0;
     }
 
     if ([action isEqualToString:@EKPANEL_ACTION_DISABLE]) {
         if (!markerEnabled(p)) {
-            EKWriteResult(@"disabled", @"Injection is already on.", p);
+            EKWriteResult(@"disabled", @"Injection is already on.");
             return 0;
         }
         if (unlink(p.fileSystemRepresentation) != 0) {
             EKWriteResult(@"error", [NSString stringWithFormat:
-                @"Could not remove %@ (errno %d).", p, errno], p);
+                @"Could not remove %@ (errno %d).", p, errno]);
             return 1;
         }
-        EKWriteResult(@"disabled", @"Injection turned on. Restart SpringBoard to apply.", p);
+        EKLog(@"injection: ON (marker removed)");
+        EKWriteResult(@"disabled", @"Injection turned on. Restart SpringBoard to apply.");
         return 0;
     }
 
     if ([action isEqualToString:@EKPANEL_ACTION_RESPRING]) {
         BOOL on = markerEnabled(p);
-        // launchd respawns SpringBoard, and the marker decides what it gets.
-        // SIGTERM lets it shut down cleanly; SIGKILL would look like a crash to
-        // the jailbreak's watchdog hook and to iOS's crash reporting.
-        pid_t sb = EKFindProcess("SpringBoard");
-        if (sb <= 0) {
-            EKWriteResult(@"error", @"SpringBoard is not running.", p);
+        pid_t pid = 0;
+        int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+        size_t size = 0;
+        if (sysctl(mib, 4, NULL, &size, NULL, 0) == 0) {
+            struct kinfo_proc *procs = malloc(size);
+            if (procs && sysctl(mib, 4, procs, &size, NULL, 0) == 0) {
+                size_t count = size / sizeof(struct kinfo_proc);
+                for (size_t i = 0; i < count; i++) {
+                    if (strncmp(procs[i].kp_proc.p_comm, "SpringBoard", MAXCOMLEN) == 0) {
+                        pid = procs[i].kp_proc.p_pid;
+                        break;
+                    }
+                }
+            }
+            free(procs);
+        }
+        if (pid <= 0) {
+            EKWriteResult(@"error", @"SpringBoard is not running.");
             return 1;
         }
         EKWriteResult(on ? @"enabled" : @"disabled",
                       on ? @"Restarting SpringBoard with injection off."
-                         : @"Restarting SpringBoard.", p);
-        if (kill(sb, SIGTERM) != 0) {
-            EKWriteResult(@"error", [NSString stringWithFormat:
-                @"Could not signal SpringBoard (errno %d).", errno], p);
+                         : @"Restarting SpringBoard.");
+        EKLog(@"respring: signalling SpringBoard (pid %d, SIGTERM), injection %@",
+              pid, on ? @"OFF" : @"ON");
+        kill(pid, SIGTERM);
+        return 0;
+    }
+
+    if ([action isEqualToString:@EKPANEL_ACTION_JETSAM]) {
+        NSDictionary *table = request[@"jetsam"];
+        if (![table isKindOfClass:[NSDictionary class]]) {
+            EKWriteResult(@"error", @"The request had no jetsam table.");
             return 1;
         }
+        return applyJetsam(table);
+    }
+
+    if ([action isEqualToString:@EKPANEL_ACTION_TRIMLOG]) {
+        NSString *log = EKPanelLogPath();
+        if (log) unlink(log.fileSystemRepresentation);
+        EKLog(@"log cleared");
+        EKWriteResult(markerEnabled(p) ? @"enabled" : @"disabled", @"Log cleared.");
+        return 0;
+    }
+
+    if ([action isEqualToString:@EKPANEL_ACTION_LOGON]) {
+        EKPanelSetLogging(YES);
+        EKLog(@"logging: on (%@)", EKPanelLogPath());
+        EKWriteResult(markerEnabled(p) ? @"enabled" : @"disabled", @"Logging on.");
+        return 0;
+    }
+
+    if ([action isEqualToString:@EKPANEL_ACTION_LOGOFF]) {
+        EKLog(@"logging: off");
+        EKPanelSetLogging(NO);
+        EKWriteResult(markerEnabled(p) ? @"enabled" : @"disabled", @"Logging off.");
         return 0;
     }
 
     if ([action isEqualToString:@EKPANEL_ACTION_STATUS]) {
         BOOL on = markerEnabled(p);
         EKWriteResult(on ? @"enabled" : @"disabled",
-                      on ? @"Injection is off." : @"Injection is on.", p);
+                      on ? @"Injection is off." : @"Injection is on.");
         return 0;
     }
 
     EKWriteResult(@"error", [NSString stringWithFormat:
-        @"Unknown action: %@", action ?: @"(none)"], p);
+        @"Unknown action: %@", action ?: @"(none)"]);
     return 1;
 }
 
@@ -141,10 +244,10 @@ static BOOL handleRequest(void) {
 
     NSString *action = req[@"action"];
     if (![action isKindOfClass:[NSString class]]) {
-        EKWriteResult(@"error", @"The request had no action.", markerPath());
+        EKWriteResult(@"error", @"The request had no action.");
         return YES;
     }
-    applyAction(action);
+    applyAction(action, req);
     return YES;
 }
 
@@ -152,10 +255,10 @@ int main(int argc, char **argv) {
     @autoreleasepool {
         // One-shot mode: used by the package's postinst and for testing.
         if (argc > 2 && strcmp(argv[1], "--apply") == 0) {
-            return applyAction(@(argv[2]));
+            return applyAction(@(argv[2]), @{});
         }
         if (argc > 1 && strcmp(argv[1], "--status") == 0) {
-            return applyAction(@EKPANEL_ACTION_STATUS);
+            return applyAction(@EKPANEL_ACTION_STATUS, @{});
         }
         if (argc > 1) {
             fprintf(stderr, "usage: ekpaneld [--apply enable|disable|respring|status]"
@@ -164,8 +267,10 @@ int main(int argc, char **argv) {
         }
 
         signal(SIGPIPE, SIG_IGN);
+        EKLog(@"helper started (injection %@)",
+              markerEnabled(markerPath()) ? @"OFF" : @"ON");
         EKWriteResult(markerEnabled(markerPath()) ? @"enabled" : @"disabled",
-                      @"Helper started.", markerPath());
+                      @"Helper started.");
         handleRequest();
 
         // Poll: watching a file that usually does not exist costs nothing,

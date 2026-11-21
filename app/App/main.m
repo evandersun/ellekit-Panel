@@ -1,9 +1,8 @@
 // ellekit-panel — the app half.
 //
-// Runs as mobile and cannot write /basebin, so it hands each instruction to
-// ekpaneld (root, from launchd) through one request plist and reads back one
-// result plist. Every exchange goes through _lock so a refresh can never
-// overwrite a request the user just made.
+// A standalone settings app, in the shape the jailbreak apps use: grouped
+// rows for tweak injection, a log file, and jetsam memory addends. It runs as
+// mobile and cannot write /basebin, so every change goes through ekpaneld.
 
 #import <UIKit/UIKit.h>
 #import "EKPanel.h"
@@ -13,124 +12,39 @@ static NSString *const kRequestPath = @EKPANEL_REQUEST_PATH;
 static NSString *const kResultPath =
     @"/var/mobile/Library/Preferences/wiki.qaq.ellekit-panel.result.plist";
 
-@interface EKPanelController : UIViewController
+enum { kSectionInjection = 0, kSectionLogging, kSectionJetsam, kSectionCount };
+
+@interface EKPanelController : UITableViewController
 @end
 
 @implementation EKPanelController {
-    UILabel *_stateLabel;
-    UILabel *_detailLabel;
-    UISwitch *_toggle;
-    UIButton *_respringButton;
-    UIActivityIndicatorView *_spinner;
+    NSDictionary *_status;
+    NSMutableDictionary *_jetsam;
+    NSArray *_jetsamKeys;
     NSLock *_lock;
     BOOL _busy;
 }
 
 - (instancetype)init {
-    if ((self = [super init])) _lock = [[NSLock alloc] init];
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        _lock = [[NSLock alloc] init];
+        _jetsam = [NSMutableDictionary dictionary];
+        _jetsamKeys = @[];
+    }
     return self;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"ElleKit Panel";
-    self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];
-
-    UIView *card = [[UIView alloc] init];
-    card.translatesAutoresizingMaskIntoConstraints = NO;
-    card.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
-    card.layer.cornerRadius = 12;
-    [self.view addSubview:card];
-
-    UILabel *caption = [[UILabel alloc] init];
-    caption.translatesAutoresizingMaskIntoConstraints = NO;
-    caption.text = @"Tweak injection";
-    caption.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-    [card addSubview:caption];
-
-    _toggle = [[UISwitch alloc] init];
-    _toggle.translatesAutoresizingMaskIntoConstraints = NO;
-    _toggle.onTintColor = [UIColor systemGreenColor];
-    [_toggle addTarget:self action:@selector(toggleChanged:)
-      forControlEvents:UIControlEventValueChanged];
-    [card addSubview:_toggle];
-
-    _stateLabel = [[UILabel alloc] init];
-    _stateLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _stateLabel.font = [UIFont boldSystemFontOfSize:22];
-    _stateLabel.textAlignment = NSTextAlignmentCenter;
-    [card addSubview:_stateLabel];
-
-    _spinner = [[UIActivityIndicatorView alloc]
-        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    _spinner.translatesAutoresizingMaskIntoConstraints = NO;
-    _spinner.hidesWhenStopped = YES;
-    [card addSubview:_spinner];
-
-    _detailLabel = [[UILabel alloc] init];
-    _detailLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _detailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
-    _detailLabel.textColor = [UIColor secondaryLabelColor];
-    _detailLabel.numberOfLines = 0;
-    _detailLabel.textAlignment = NSTextAlignmentCenter;
-    [card addSubview:_detailLabel];
-
-    _respringButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    _respringButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [_respringButton setTitle:@"Restart SpringBoard" forState:UIControlStateNormal];
-    _respringButton.titleLabel.font =
-        [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-    [_respringButton addTarget:self action:@selector(respringTapped:)
-              forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:_respringButton];
-
-    UILabel *note = [[UILabel alloc] init];
-    note.translatesAutoresizingMaskIntoConstraints = NO;
-    note.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
-    note.textColor = [UIColor tertiaryLabelColor];
-    note.numberOfLines = 0;
-    note.text = @"A change applies to processes started from now on. "
-                 "Respring to apply it to SpringBoard and its apps.";
-    [self.view addSubview:note];
-
-    UILayoutGuide *g = self.view.safeAreaLayoutGuide;
-    [NSLayoutConstraint activateConstraints:@[
-        [card.topAnchor constraintEqualToAnchor:g.topAnchor constant:20],
-        [card.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:16],
-        [card.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-16],
-
-        [caption.topAnchor constraintEqualToAnchor:card.topAnchor constant:18],
-        [caption.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
-        [_toggle.centerYAnchor constraintEqualToAnchor:caption.centerYAnchor],
-        [_toggle.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-
-        [_stateLabel.topAnchor constraintEqualToAnchor:_toggle.bottomAnchor constant:18],
-        [_stateLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
-        [_stateLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-
-        [_spinner.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-        [_spinner.centerYAnchor constraintEqualToAnchor:_stateLabel.centerYAnchor],
-
-        [_detailLabel.topAnchor constraintEqualToAnchor:_stateLabel.bottomAnchor constant:6],
-        [_detailLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16],
-        [_detailLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16],
-        [_detailLabel.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-18],
-
-        [_respringButton.topAnchor constraintEqualToAnchor:card.bottomAnchor constant:18],
-        [_respringButton.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-
-        [note.topAnchor constraintEqualToAnchor:_respringButton.bottomAnchor constant:10],
-        [note.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:16],
-        [note.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-16],
-        [note.bottomAnchor constraintLessThanOrEqualToAnchor:g.bottomAnchor constant:-16],
-    ]];
+    self.title = @"ElleKit";
+    [self refresh];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [[NSNotificationCenter defaultCenter] addObserver:self
-        selector:@selector(refreshFromForeground)
+        selector:@selector(refresh)
         name:UIApplicationWillEnterForegroundNotification object:nil];
     [self refresh];
 }
@@ -140,24 +54,22 @@ static NSString *const kResultPath =
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-- (void)setBusy:(BOOL)busy {
-    _busy = busy;
-    _toggle.enabled = !busy;
-    _respringButton.enabled = !busy;
-    if (busy) [_spinner startAnimating]; else [_spinner stopAnimating];
-}
+#pragma mark - talking to the helper
 
 // One exchange with the helper. Serialised: the request and result files are
 // shared, so two overlapping calls would clobber each other.
-- (NSDictionary *)sendAction:(NSString *)action {
+- (NSDictionary *)sendAction:(NSString *)action payload:(NSDictionary *)payload {
     NSString *req = EKPanelBootstrapPath(kRequestPath);
     NSString *res = EKPanelBootstrapPath(kResultPath);
     if (req == nil || res == nil) return nil;
 
+    NSMutableDictionary *request = [NSMutableDictionary dictionary];
+    request[@"action"] = action;
+    if (payload) [request addEntriesFromDictionary:payload];
+
     [_lock lock];
     NSDictionary *answer = nil;
     [[NSFileManager defaultManager] removeItemAtPath:res error:NULL];
-    NSDictionary *request = @{@"action": action};
     if ([request writeToFile:req atomically:YES]) {
         NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:5.0];
         while ([deadline timeIntervalSinceNow] > 0) {
@@ -170,62 +82,267 @@ static NSString *const kResultPath =
     return answer;
 }
 
-- (void)renderResult:(NSDictionary *)r {
-    if (r == nil) {
-        _stateLabel.text = @"No answer";
-        _stateLabel.textColor = [UIColor systemOrangeColor];
-        _detailLabel.text = @"The helper did not respond. Is ellekit-panel "
-                            "installed with its launch daemon?";
-        return;
+- (void)apply:(NSDictionary *)r {
+    if (r == nil) return;
+    _status = r;
+    NSDictionary *table = r[@EKPANEL_RESULT_JETSAM];
+    if ([table isKindOfClass:[NSDictionary class]]) {
+        _jetsam = [table mutableCopy];
+        _jetsamKeys = [table.allKeys sortedArrayUsingSelector:@selector(compare:)];
+    } else {
+        _jetsam = [NSMutableDictionary dictionary];
+        _jetsamKeys = @[];
     }
-    NSString *state = r[@EKPANEL_RESULT_STATE];
-    BOOL injected = ![state isEqualToString:@"enabled"];
-    _toggle.on = injected;
-    _stateLabel.text = injected ? @"Injection ON" : @"Injection OFF";
-    _stateLabel.textColor = injected ? [UIColor systemGreenColor]
-                                     : [UIColor systemRedColor];
-    NSString *msg = r[@EKPANEL_RESULT_MESSAGE];
-    _detailLabel.text = msg.length ? msg : @"";
+    [self.tableView reloadData];
 }
 
 - (void)refresh {
     if (_busy) return;
+    _busy = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSDictionary *r = [self sendAction:@"status"];
+        NSDictionary *r = [self sendAction:@EKPANEL_ACTION_STATUS payload:nil];
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (!self->_busy) [self renderResult:r];
+            self->_busy = NO;
+            [self apply:r];
         });
     });
 }
 
-- (void)refreshFromForeground {
-    [self refresh];
-}
-
-- (void)toggleChanged:(UISwitch *)sw {
+- (void)runAction:(NSString *)action payload:(NSDictionary *)payload {
     if (_busy) return;
-    BOOL wantInject = sw.on;
-    [self setBusy:YES];
-    NSString *action = wantInject ? @"disable" : @"enable";
+    _busy = YES;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        NSDictionary *r = [self sendAction:action];
+        NSDictionary *r = [self sendAction:action payload:payload];
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self setBusy:NO];
-            [self renderResult:r];
+            self->_busy = NO;
+            [self apply:r];
         });
     });
 }
 
-- (void)respringTapped:(id)sender {
+#pragma mark - state
+
+- (BOOL)injectionOn {
+    NSString *state = _status[@EKPANEL_RESULT_STATE];
+    return ![state isEqualToString:@"enabled"];
+}
+
+- (BOOL)loggingOn {
+    return [_status[@EKPANEL_RESULT_LOGGING] boolValue];
+}
+
+- (NSString *)sizeString {
+    unsigned long long n = [_status[@EKPANEL_RESULT_LOGSIZE] unsignedLongLongValue];
+    if (n < 1024) return [NSString stringWithFormat:@"%llu B", n];
+    if (n < 1024 * 1024) return [NSString stringWithFormat:@"%.1f KB", n / 1024.0];
+    return [NSString stringWithFormat:@"%.1f MB", n / (1024.0 * 1024.0)];
+}
+
+#pragma mark - table
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return kSectionCount; }
+
+- (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
+    if (s == kSectionInjection) return @"Tweak injection";
+    if (s == kSectionLogging) return @"Log";
+    return @"Jetsam memory";
+}
+
+- (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
+    if (s == kSectionInjection) {
+        return @"A change applies to processes started from now on. "
+                "Restart SpringBoard to apply it to SpringBoard and its apps.";
+    }
+    if (s == kSectionLogging) {
+        return @"While on, the helper records what it does to "
+                "/var/log/extensionloader.log.";
+    }
+    return @"Extra memory, in megabytes, granted to each listed process "
+            "when it starts. The injection layer reads this table at spawn time.";
+}
+
+- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
+    if (s == kSectionInjection) return 2;
+    if (s == kSectionLogging) return 3;
+    return _jetsamKeys.count + 1;
+}
+
+- (UITableViewCell *)cellWithStyle:(UITableViewCellStyle)style {
+    return [[UITableViewCell alloc] initWithStyle:style reuseIdentifier:nil];
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tv
+         cellForRowAtIndexPath:(NSIndexPath *)ip {
+    UITableViewCell *cell;
+
+    if (ip.section == kSectionInjection) {
+        if (ip.row == 0) {
+            cell = [self cellWithStyle:UITableViewCellStyleSubtitle];
+            cell.textLabel.text = @"Injection";
+            cell.detailTextLabel.text = [self injectionOn] ? @"On" : @"Off";
+            UISwitch *sw = [[UISwitch alloc] init];
+            sw.on = [self injectionOn];
+            sw.onTintColor = [UIColor systemGreenColor];
+            [sw addTarget:self action:@selector(injectionChanged:)
+        forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = sw;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else {
+            cell = [self cellWithStyle:UITableViewCellStyleDefault];
+            cell.textLabel.text = @"Restart SpringBoard";
+            cell.textLabel.textColor = self.view.tintColor;
+            cell.textLabel.textAlignment = NSTextAlignmentCenter;
+        }
+        return cell;
+    }
+
+    if (ip.section == kSectionLogging) {
+        if (ip.row == 0) {
+            cell = [self cellWithStyle:UITableViewCellStyleSubtitle];
+            cell.textLabel.text = @"Enable log";
+            cell.detailTextLabel.text = [self loggingOn] ? @"Writing" : @"Not writing";
+            UISwitch *sw = [[UISwitch alloc] init];
+            sw.on = [self loggingOn];
+            [sw addTarget:self action:@selector(loggingChanged:)
+        forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = sw;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else if (ip.row == 1) {
+            cell = [self cellWithStyle:UITableViewCellStyleValue1];
+            cell.textLabel.text = @"var/log/extensionloader.log";
+            cell.detailTextLabel.text = [self sizeString];
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else {
+            cell = [self cellWithStyle:UITableViewCellStyleDefault];
+            cell.textLabel.text = @"Clear log";
+            cell.textLabel.textColor = self.view.tintColor;
+            cell.textLabel.textAlignment = NSTextAlignmentCenter;
+        }
+        return cell;
+    }
+
+    cell = [self cellWithStyle:UITableViewCellStyleValue1];
+    if (ip.row < (NSInteger)_jetsamKeys.count) {
+        NSString *key = _jetsamKeys[ip.row];
+        cell.textLabel.text = key;
+        cell.textLabel.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular];
+        long long mb = [_jetsam[key] longLongValue];
+        cell.detailTextLabel.text = [NSString stringWithFormat:@"%+lld MB", mb];
+    } else {
+        cell.textLabel.text = @"Add a process…";
+        cell.textLabel.textColor = self.view.tintColor;
+        cell.detailTextLabel.text = @"";
+    }
+    return cell;
+}
+
+#pragma mark - actions
+
+- (void)injectionChanged:(UISwitch *)sw {
+    [self runAction:sw.on ? @EKPANEL_ACTION_DISABLE : @EKPANEL_ACTION_ENABLE payload:nil];
+}
+
+- (void)loggingChanged:(UISwitch *)sw {
+    [self runAction:sw.on ? @EKPANEL_ACTION_LOGON : @EKPANEL_ACTION_LOGOFF payload:nil];
+}
+
+- (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
+    [tv deselectRowAtIndexPath:ip animated:YES];
+
+    if (ip.section == kSectionInjection && ip.row == 1) {
+        UIAlertController *a = [UIAlertController
+            alertControllerWithTitle:@"Restart SpringBoard"
+            message:@"SpringBoard will restart. Apps keep running; their tweaks "
+                     "are reloaded when they start again."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"Cancel"
+            style:UIAlertActionStyleCancel handler:nil]];
+        [a addAction:[UIAlertAction actionWithTitle:@"Restart"
+            style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
+                [self runAction:@EKPANEL_ACTION_RESPRING payload:nil];
+            }]];
+        [self presentViewController:a animated:YES completion:nil];
+        return;
+    }
+
+    if (ip.section == kSectionLogging && ip.row == 2) {
+        UIAlertController *a = [UIAlertController
+            alertControllerWithTitle:@"Clear log"
+            message:@"The log file is deleted."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"Cancel"
+            style:UIAlertActionStyleCancel handler:nil]];
+        [a addAction:[UIAlertAction actionWithTitle:@"Clear"
+            style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
+                [self runAction:@EKPANEL_ACTION_TRIMLOG payload:nil];
+            }]];
+        [self presentViewController:a animated:YES completion:nil];
+        return;
+    }
+
+    if (ip.section != kSectionJetsam) return;
+
+    if (ip.row >= (NSInteger)_jetsamKeys.count) {
+        [self promptAdd];
+        return;
+    }
+    [self promptEdit:_jetsamKeys[ip.row]];
+}
+
+- (void)saveJetsam {
+    [self runAction:@EKPANEL_ACTION_JETSAM payload:@{@"jetsam": _jetsam}];
+}
+
+- (void)promptAdd {
     UIAlertController *a = [UIAlertController
-        alertControllerWithTitle:@"Restart SpringBoard"
-        message:@"SpringBoard will restart. Apps keep running; their tweaks are reloaded when they start again."
+        alertControllerWithTitle:@"Add process"
+        message:@"A process path, as the injection layer spells it, and the "
+                 "extra megabytes to grant it."
         preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *t) {
+        t.placeholder = @"/SpringBoard";
+        t.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        t.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *t) {
+        t.placeholder = @"64";
+        t.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+    }];
     [a addAction:[UIAlertAction actionWithTitle:@"Cancel"
         style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Restart"
+    [a addAction:[UIAlertAction actionWithTitle:@"Add"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+            NSString *path = a.textFields[0].text ?: @"";
+            NSString *num = a.textFields[1].text ?: @"";
+            if (path.length == 0 || num.length == 0) return;
+            self->_jetsam[path] = @([num longLongValue]);
+            [self saveJetsam];
+        }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+- (void)promptEdit:(NSString *)key {
+    UIAlertController *a = [UIAlertController
+        alertControllerWithTitle:key
+        message:@"Extra megabytes for this process."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *t) {
+        t.text = [NSString stringWithFormat:@"%lld", [_jetsam[key] longLongValue]];
+        t.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+    }];
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Remove"
         style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
-            [self sendAction:@"respring"];
+            [self->_jetsam removeObjectForKey:key];
+            [self saveJetsam];
+        }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Save"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+            NSString *num = a.textFields[0].text ?: @"";
+            if (num.length == 0) return;
+            self->_jetsam[key] = @([num longLongValue]);
+            [self saveJetsam];
         }]];
     [self presentViewController:a animated:YES completion:nil];
 }

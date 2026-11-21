@@ -2,6 +2,8 @@
 #import <dlfcn.h>
 #import <sys/stat.h>
 #import <limits.h>
+#import <fcntl.h>
+#import <unistd.h>
 
 // roothide keeps the bootstrap under a randomly named .jbroot- directory.
 // A binary inside it finds it from its own image path; one outside it (the
@@ -64,4 +66,26 @@ NSString *EKPanelBootstrapPath(NSString *path) {
 
 NSString *EKPanelSafeModePath(void) {
     return EKPanelBootstrapPath(@EKPANEL_SAFE_MODE_PATH);
+}
+
+BOOL EKPanelLoggingEnabled(void) {
+    NSString *flag = EKPanelBootstrapPath(@EKPANEL_LOG_FLAG_PATH);
+    return flag != nil && access(flag.fileSystemRepresentation, F_OK) == 0;
+}
+
+BOOL EKPanelSetLogging(BOOL on) {
+    NSString *flag = EKPanelBootstrapPath(@EKPANEL_LOG_FLAG_PATH);
+    if (flag == nil) return NO;
+    if (!on) {
+        unlink(flag.fileSystemRepresentation);
+        return YES;
+    }
+    int fd = open(flag.fileSystemRepresentation, O_CREAT | O_WRONLY, 0644);
+    if (fd < 0) return NO;
+    close(fd);
+    return YES;
+}
+
+NSString *EKPanelLogPath(void) {
+    return EKPanelBootstrapPath(@EKPANEL_LOG_PATH);
 }

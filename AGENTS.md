@@ -69,3 +69,26 @@ learn:
     cat /var/jb/var/mobile/Library/Preferences/wiki.qaq.ellekit-panel.result.plist
 
 `--apply enable|disable|respring|status` runs one action without the daemon.
+
+## What the app offers
+
+A grouped settings screen in three parts, each row an instruction the helper
+carries out:
+
+- **Tweak injection** — the marker on or off, and Restart SpringBoard.
+- **Log** — `Enable log` writes the flag file
+  `<jbroot>/var/mobile/Library/Preferences/wiki.qaq.ellekit-panel.logging`;
+  while it exists the helper appends timestamped lines to
+  `<jbroot>/var/log/extensionloader.log`. `Clear log` deletes it. ElleKit's own
+  switch (`/var/mobile/.ekenablelogging`) is no use here: only its launchd
+  hook writes, and Dopamine does not run that.
+- **Jetsam memory** — a per-process table of megabytes added to a process's
+  memory limit at spawn: `/var/mobile/Library/RootHide/cn.zqbb.jetsam.addend.plist`.
+  This is the table the roothide-patched `systemhook` reads (its path appears in
+  that dylib), and the same one the RootHide app edits.
+
+Dopamine's own `jailbreakSettings.jetsamMultiplier` **cannot** be reached from
+outside: `bootstrap_look_up("com.opa334.jailbreakd")` returns 1102
+(BOOTSTRAP_UNKNOWN_SERVICE) and `jbclient_platform_jbsettings_set_double`
+returns -1, so there is nothing to sync with. The addend table above is the
+knob that actually works on this device.
