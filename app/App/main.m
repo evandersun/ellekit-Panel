@@ -77,7 +77,7 @@ static NSString *const kResultPath =
 
     _respringButton = [UIButton buttonWithType:UIButtonTypeSystem];
     _respringButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [_respringButton setTitle:@"Respring now" forState:UIControlStateNormal];
+    [_respringButton setTitle:@"Restart SpringBoard" forState:UIControlStateNormal];
     _respringButton.titleLabel.font =
         [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     [_respringButton addTarget:self action:@selector(respringTapped:)
@@ -218,12 +218,12 @@ static NSString *const kResultPath =
 
 - (void)respringTapped:(id)sender {
     UIAlertController *a = [UIAlertController
-        alertControllerWithTitle:@"Respring"
-        message:@"SpringBoard will restart."
+        alertControllerWithTitle:@"Restart SpringBoard"
+        message:@"SpringBoard will restart. Apps keep running; their tweaks are reloaded when they start again."
         preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"Cancel"
         style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Respring"
+    [a addAction:[UIAlertAction actionWithTitle:@"Restart"
         style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
             [self sendAction:@"respring"];
         }]];

@@ -7,14 +7,12 @@
 
 #import "ekpanel.h"
 #import <Foundation/Foundation.h>
-#import <spawn.h>
 #import <sys/stat.h>
+#import <sys/sysctl.h>
 #import <signal.h>
 #import <unistd.h>
 #import <fcntl.h>
 #import <errno.h>
-
-extern char **environ;
 
 static void EKWriteResult(NSString *state, NSString *message, NSString *marker) {
     NSString *path = EKPanelBootstrapPath(@EKPANEL_RESULT_PATH);
@@ -38,6 +36,32 @@ static BOOL markerEnabled(NSString *path) {
     return lstat(path.fileSystemRepresentation, &st) == 0;
 }
 
+// The pid of the process whose name matches `name`, or -1.
+// MAXCOMLEN truncates names in kinfo_proc, so compare up to that length.
+static pid_t EKFindProcess(const char *name) {
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0 };
+    size_t size = 0;
+    if (sysctl(mib, 4, NULL, &size, NULL, 0) != 0) return -1;
+
+    struct kinfo_proc *procs = malloc(size);
+    if (procs == NULL) return -1;
+    if (sysctl(mib, 4, procs, &size, NULL, 0) != 0) {
+        free(procs);
+        return -1;
+    }
+
+    pid_t found = -1;
+    size_t count = size / sizeof(struct kinfo_proc);
+    for (size_t i = 0; i < count; i++) {
+        if (strncmp(procs[i].kp_proc.p_comm, name, MAXCOMLEN) == 0) {
+            found = procs[i].kp_proc.p_pid;
+            break;
+        }
+    }
+    free(procs);
+    return found;
+}
+
 static int applyAction(NSString *action) {
     NSString *p = markerPath();
 
@@ -53,7 +77,7 @@ static int applyAction(NSString *action) {
             return 1;
         }
         close(fd);
-        EKWriteResult(@"enabled", @"Injection turned off. Respring to apply.", p);
+        EKWriteResult(@"enabled", @"Injection turned off. Restart SpringBoard to apply.", p);
         return 0;
     }
 
@@ -67,19 +91,28 @@ static int applyAction(NSString *action) {
                 @"Could not remove %@ (errno %d).", p, errno], p);
             return 1;
         }
-        EKWriteResult(@"disabled", @"Injection turned on. Respring to apply.", p);
+        EKWriteResult(@"disabled", @"Injection turned on. Restart SpringBoard to apply.", p);
         return 0;
     }
 
     if ([action isEqualToString:@EKPANEL_ACTION_RESPRING]) {
         BOOL on = markerEnabled(p);
+        // launchd respawns SpringBoard, and the marker decides what it gets.
+        // SIGTERM lets it shut down cleanly; SIGKILL would look like a crash to
+        // the jailbreak's watchdog hook and to iOS's crash reporting.
+        pid_t sb = EKFindProcess("SpringBoard");
+        if (sb <= 0) {
+            EKWriteResult(@"error", @"SpringBoard is not running.", p);
+            return 1;
+        }
         EKWriteResult(on ? @"enabled" : @"disabled",
-                      on ? @"Respringing with injection off." : @"Respringing.", p);
-        // launchd respawns SpringBoard; the marker decides what it receives.
-        pid_t pid = 0;
-        char *const argv[] = { (char *)"killall", (char *)"-9",
-                               (char *)"SpringBoard", NULL };
-        posix_spawn(&pid, "/usr/bin/killall", NULL, NULL, argv, environ);
+                      on ? @"Restarting SpringBoard with injection off."
+                         : @"Restarting SpringBoard.", p);
+        if (kill(sb, SIGTERM) != 0) {
+            EKWriteResult(@"error", [NSString stringWithFormat:
+                @"Could not signal SpringBoard (errno %d).", errno], p);
+            return 1;
+        }
         return 0;
     }
 
