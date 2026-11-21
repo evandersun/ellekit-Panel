@@ -26,7 +26,7 @@ BASE="-fobjc-arc -O2 -Iapp/include -Iapp/daemon $BDEF"
 # lets each device pick the slice it accepts.
 for slice in arm64 arm64e; do
     clang -arch $slice $BASE -framework UIKit -framework Foundation \
-        -o "$out/ellekit-panel.$slice" app/App/main.m app/include/EKPanelPaths.m
+        -o "$out/ellekit-panel.$slice" app/App/main.m app/App/ChoicyApps.m app/include/EKPanelPaths.m
     clang -arch $slice $BASE -framework Foundation \
         -o "$out/ekpaneld.$slice" app/daemon/ekpaneld.m app/include/EKPanelPaths.m
 done

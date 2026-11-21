@@ -20,6 +20,11 @@
 // Where the daemon keeps the log.
 #define EKPANEL_LOG_PATH  "/var/log/extensionloader.log"
 
+// Choicy keeps its per-app tweak settings here; its injected dylib reads
+// this file directly, so writing it is enough.
+#define EKPANEL_CHOICY_PATH \
+    "/var/mobile/Library/Preferences/com.opa334.choicyprefs.plist"
+
 // Per-process memory addends the injection layer reads at spawn time.
 #define EKPANEL_JETSAM_PATH \
     "/var/mobile/Library/RootHide/cn.zqbb.jetsam.addend.plist"
@@ -30,6 +35,7 @@
 #define EKPANEL_ACTION_STATUS   "status"    // read everything
 #define EKPANEL_ACTION_RESPRING "respring"  // restart SpringBoard
 #define EKPANEL_ACTION_JETSAM   "jetsam"    // write the addend table
+#define EKPANEL_ACTION_CHOICY   "choicy"    // write Choicy per-app settings
 #define EKPANEL_ACTION_TRIMLOG  "trimlog"   // empty the log
 #define EKPANEL_ACTION_LOGON    "logon"     // logging turned on
 #define EKPANEL_ACTION_LOGOFF   "logoff"    // logging turned off

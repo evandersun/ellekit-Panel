@@ -1,18 +1,26 @@
 // ellekit-panel — the app half.
 //
 // A standalone settings app, in the shape the jailbreak apps use: grouped
-// rows for tweak injection, a log file, and jetsam memory addends. It runs as
-// mobile and cannot write /basebin, so every change goes through ekpaneld.
+// rows for tweak injection, a log file, jetsam memory addends, and per-app
+// control through Choicy. It runs as mobile and cannot write /basebin, so
+// every change to the injection state goes through ekpaneld.
 
 #import <UIKit/UIKit.h>
 #import "EKPanel.h"
 #import "ekpanel.h"
+#import "ChoicyApps.h"
 
 static NSString *const kRequestPath = @EKPANEL_REQUEST_PATH;
 static NSString *const kResultPath =
     @"/var/mobile/Library/Preferences/wiki.qaq.ellekit-panel.result.plist";
 
-enum { kSectionInjection = 0, kSectionLogging, kSectionJetsam, kSectionCount };
+enum {
+    kSectionInjection = 0,
+    kSectionLogging,
+    kSectionJetsam,
+    kSectionChoicy,
+    kSectionCount
+};
 
 @interface EKPanelController : UITableViewController
 @end
@@ -20,6 +28,7 @@ enum { kSectionInjection = 0, kSectionLogging, kSectionJetsam, kSectionCount };
 @implementation EKPanelController {
     NSDictionary *_status;
     NSMutableDictionary *_jetsam;
+    NSDictionary *_choicy;
     NSArray *_jetsamKeys;
     NSLock *_lock;
     BOOL _busy;
@@ -93,6 +102,8 @@ enum { kSectionInjection = 0, kSectionLogging, kSectionJetsam, kSectionCount };
         _jetsam = [NSMutableDictionary dictionary];
         _jetsamKeys = @[];
     }
+    NSDictionary *choicy = r[@EKPANEL_RESULT_CHOICY];
+    _choicy = [choicy isKindOfClass:[NSDictionary class]] ? choicy : @{};
     [self.tableView reloadData];
 }
 
@@ -138,100 +149,139 @@ enum { kSectionInjection = 0, kSectionLogging, kSectionJetsam, kSectionCount };
     return [NSString stringWithFormat:@"%.1f MB", n / (1024.0 * 1024.0)];
 }
 
+- (UITableViewCell *)plainCell {
+    return [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                  reuseIdentifier:nil];
+}
+
+- (UITableViewCell *)valueCell {
+    return [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                  reuseIdentifier:nil];
+}
+
+- (UITableViewCell *)switchCell:(NSString *)title
+                       subtitle:(NSString *)subtitle
+                             on:(BOOL)on
+                         action:(SEL)action {
+    UITableViewCell *cell = [self valueCell];
+    cell.textLabel.text = title;
+    cell.detailTextLabel.text = subtitle;
+    UISwitch *sw = [[UISwitch alloc] init];
+    sw.on = on;
+    sw.onTintColor = [UIColor systemGreenColor];
+    [sw addTarget:self action:action forControlEvents:UIControlEventValueChanged];
+    cell.accessoryView = sw;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    return cell;
+}
+
 #pragma mark - table
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv { return kSectionCount; }
 
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)s {
-    if (s == kSectionInjection) return @"Tweak injection";
-    if (s == kSectionLogging) return @"Log";
-    return @"Jetsam memory";
+    switch (s) {
+        case kSectionInjection: return @"Tweak injection";
+        case kSectionLogging:   return @"Log";
+        case kSectionJetsam:    return @"Jetsam memory";
+        default:                return @"Per-app injection";
+    }
 }
 
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)s {
-    if (s == kSectionInjection) {
-        return @"A change applies to processes started from now on. "
-                "Restart SpringBoard to apply it to SpringBoard and its apps.";
+    switch (s) {
+        case kSectionInjection:
+            return @"A change applies to processes started from now on. "
+                    "Restart SpringBoard to apply it to SpringBoard and its apps.";
+        case kSectionLogging:
+            return @"While on, the helper records what it does to "
+                    "/var/log/extensionloader.log.";
+        case kSectionJetsam:
+            return @"Extra memory, in megabytes, granted to each listed process "
+                    "when it starts. The injection layer reads this table at spawn time.";
+        default:
+            return @"Choicy does the work: the dylib it injects reads these "
+                    "settings and skips the tweaks you turn off, the next time "
+                    "that app starts.";
     }
-    if (s == kSectionLogging) {
-        return @"While on, the helper records what it does to "
-                "/var/log/extensionloader.log.";
-    }
-    return @"Extra memory, in megabytes, granted to each listed process "
-            "when it starts. The injection layer reads this table at spawn time.";
 }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)s {
-    if (s == kSectionInjection) return 2;
-    if (s == kSectionLogging) return 3;
-    return _jetsamKeys.count + 1;
-}
-
-- (UITableViewCell *)cellWithStyle:(UITableViewCellStyle)style {
-    return [[UITableViewCell alloc] initWithStyle:style reuseIdentifier:nil];
+    switch (s) {
+        case kSectionInjection: return 2;
+        case kSectionLogging:   return 3;
+        case kSectionChoicy:    return 1;
+        default:                return _jetsamKeys.count + 1;
+    }
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv
          cellForRowAtIndexPath:(NSIndexPath *)ip {
-    UITableViewCell *cell;
-
     if (ip.section == kSectionInjection) {
         if (ip.row == 0) {
-            cell = [self cellWithStyle:UITableViewCellStyleSubtitle];
-            cell.textLabel.text = @"Injection";
-            cell.detailTextLabel.text = [self injectionOn] ? @"On" : @"Off";
-            UISwitch *sw = [[UISwitch alloc] init];
-            sw.on = [self injectionOn];
-            sw.onTintColor = [UIColor systemGreenColor];
-            [sw addTarget:self action:@selector(injectionChanged:)
-        forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = sw;
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        } else {
-            cell = [self cellWithStyle:UITableViewCellStyleDefault];
-            cell.textLabel.text = @"Restart SpringBoard";
-            cell.textLabel.textColor = self.view.tintColor;
-            cell.textLabel.textAlignment = NSTextAlignmentCenter;
+            return [self switchCell:@"Injection"
+                           subtitle:[self injectionOn] ? @"On" : @"Off"
+                                 on:[self injectionOn]
+                             action:@selector(injectionChanged:)];
         }
+        UITableViewCell *cell = [self plainCell];
+        cell.textLabel.text = @"Restart SpringBoard";
+        cell.textLabel.textColor = self.view.tintColor;
+        cell.textLabel.textAlignment = NSTextAlignmentCenter;
         return cell;
     }
 
     if (ip.section == kSectionLogging) {
         if (ip.row == 0) {
-            cell = [self cellWithStyle:UITableViewCellStyleSubtitle];
-            cell.textLabel.text = @"Enable log";
-            cell.detailTextLabel.text = [self loggingOn] ? @"Writing" : @"Not writing";
-            UISwitch *sw = [[UISwitch alloc] init];
-            sw.on = [self loggingOn];
-            [sw addTarget:self action:@selector(loggingChanged:)
-        forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = sw;
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        } else if (ip.row == 1) {
-            cell = [self cellWithStyle:UITableViewCellStyleValue1];
-            cell.textLabel.text = @"var/log/extensionloader.log";
-            cell.detailTextLabel.text = [self sizeString];
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        } else {
-            cell = [self cellWithStyle:UITableViewCellStyleDefault];
-            cell.textLabel.text = @"Clear log";
-            cell.textLabel.textColor = self.view.tintColor;
-            cell.textLabel.textAlignment = NSTextAlignmentCenter;
+            return [self switchCell:@"Enable log"
+                           subtitle:[self loggingOn] ? @"Writing" : @"Not writing"
+                                 on:[self loggingOn]
+                             action:@selector(loggingChanged:)];
         }
+        if (ip.row == 1) {
+            UITableViewCell *cell = [self plainCell];
+            cell.textLabel.text = @"var/log/extensionloader.log";
+            cell.textLabel.font = [UIFont monospacedSystemFontOfSize:13
+                                                              weight:UIFontWeightRegular];
+            UILabel *size = [[UILabel alloc] init];
+            size.text = [self sizeString];
+            size.textColor = [UIColor secondaryLabelColor];
+            size.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+            [size sizeToFit];
+            cell.accessoryView = size;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            return cell;
+        }
+        UITableViewCell *cell = [self plainCell];
+        cell.textLabel.text = @"Clear log";
+        cell.textLabel.textColor = self.view.tintColor;
+        cell.textLabel.textAlignment = NSTextAlignmentCenter;
         return cell;
     }
 
-    cell = [self cellWithStyle:UITableViewCellStyleValue1];
+    if (ip.section == kSectionChoicy) {
+        UITableViewCell *cell = [self plainCell];
+        cell.textLabel.text = @"Choose apps…";
+        cell.textLabel.textColor = self.view.tintColor;
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        return cell;
+    }
+
+    UITableViewCell *cell = [self plainCell];
     if (ip.row < (NSInteger)_jetsamKeys.count) {
         NSString *key = _jetsamKeys[ip.row];
         cell.textLabel.text = key;
-        cell.textLabel.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular];
-        long long mb = [_jetsam[key] longLongValue];
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%+lld MB", mb];
+        cell.textLabel.font = [UIFont monospacedSystemFontOfSize:13
+                                                          weight:UIFontWeightRegular];
+        UILabel *value = [[UILabel alloc] init];
+        value.text = [NSString stringWithFormat:@"%+lld MB",
+                      [_jetsam[key] longLongValue]];
+        value.textColor = [UIColor secondaryLabelColor];
+        [value sizeToFit];
+        cell.accessoryView = value;
     } else {
         cell.textLabel.text = @"Add a process…";
         cell.textLabel.textColor = self.view.tintColor;
-        cell.detailTextLabel.text = @"";
     }
     return cell;
 }
@@ -246,37 +296,50 @@ enum { kSectionInjection = 0, kSectionLogging, kSectionJetsam, kSectionCount };
     [self runAction:sw.on ? @EKPANEL_ACTION_LOGON : @EKPANEL_ACTION_LOGOFF payload:nil];
 }
 
+- (void)confirmTitle:(NSString *)title
+             message:(NSString *)message
+          actionName:(NSString *)actionName
+              action:(NSString *)action {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:title
+                                                              message:message
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                         style:UIAlertActionStyleCancel
+                                       handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:actionName
+                                         style:UIAlertActionStyleDestructive
+                                       handler:^(UIAlertAction *x) {
+        [self runAction:action payload:nil];
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
 
     if (ip.section == kSectionInjection && ip.row == 1) {
-        UIAlertController *a = [UIAlertController
-            alertControllerWithTitle:@"Restart SpringBoard"
-            message:@"SpringBoard will restart. Apps keep running; their tweaks "
-                     "are reloaded when they start again."
-            preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"Cancel"
-            style:UIAlertActionStyleCancel handler:nil]];
-        [a addAction:[UIAlertAction actionWithTitle:@"Restart"
-            style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
-                [self runAction:@EKPANEL_ACTION_RESPRING payload:nil];
-            }]];
-        [self presentViewController:a animated:YES completion:nil];
+        [self confirmTitle:@"Restart SpringBoard"
+                   message:@"SpringBoard will restart. Apps keep running; their "
+                            "tweaks are reloaded when they start again."
+                actionName:@"Restart"
+                    action:@EKPANEL_ACTION_RESPRING];
         return;
     }
 
     if (ip.section == kSectionLogging && ip.row == 2) {
-        UIAlertController *a = [UIAlertController
-            alertControllerWithTitle:@"Clear log"
-            message:@"The log file is deleted."
-            preferredStyle:UIAlertControllerStyleAlert];
-        [a addAction:[UIAlertAction actionWithTitle:@"Cancel"
-            style:UIAlertActionStyleCancel handler:nil]];
-        [a addAction:[UIAlertAction actionWithTitle:@"Clear"
-            style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) {
-                [self runAction:@EKPANEL_ACTION_TRIMLOG payload:nil];
-            }]];
-        [self presentViewController:a animated:YES completion:nil];
+        [self confirmTitle:@"Clear log"
+                   message:@"The log file is deleted."
+                actionName:@"Clear"
+                    action:@EKPANEL_ACTION_TRIMLOG];
+        return;
+    }
+
+    if (ip.section == kSectionChoicy) {
+        EKChoicyController *c = [[EKChoicyController alloc] initWithSettings:_choicy
+            onSave:^(NSDictionary *s) {
+                [self runAction:@EKPANEL_ACTION_CHOICY payload:@{@"choicy": s}];
+            }];
+        [self.navigationController pushViewController:c animated:YES];
         return;
     }
 

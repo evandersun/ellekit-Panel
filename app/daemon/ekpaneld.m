@@ -62,6 +62,56 @@ static NSDictionary *jetsamTable(void) {
     return [d isKindOfClass:[NSDictionary class]] ? d : @{};
 }
 
+static void EKWriteResult(NSString *state, NSString *message);
+
+// Choicy's per-app settings, read from the file its dylib itself reads.
+static NSString *choicyPath(void) {
+    return EKPanelBootstrapPath(@EKPANEL_CHOICY_PATH) ?: @EKPANEL_CHOICY_PATH;
+}
+
+static NSDictionary *choicyDocument(void) {
+    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:choicyPath()];
+    return [d isKindOfClass:[NSDictionary class]] ? d : @{};
+}
+
+static NSDictionary *choicySettings(void) {
+    NSDictionary *s = choicyDocument()[@"appSettings"];
+    return [s isKindOfClass:[NSDictionary class]] ? s : @{};
+}
+
+// Writes the per-app table back, leaving Choicy's other keys alone.
+static int applyChoicy(NSDictionary *incoming) {
+    NSString *p = choicyPath();
+    NSMutableDictionary *document = [choicyDocument() mutableCopy];
+    if (document == nil) document = [NSMutableDictionary dictionary];
+
+    NSMutableDictionary *clean = [NSMutableDictionary dictionary];
+    for (id key in incoming) {
+        if (![key isKindOfClass:[NSString class]]) continue;
+        id entry = incoming[key];
+        if ([entry isKindOfClass:[NSDictionary class]]) clean[key] = entry;
+    }
+    document[@"appSettings"] = clean;
+    if (document[@"preferenceVersion"] == nil) document[@"preferenceVersion"] = @1;
+
+    if (![document writeToFile:p atomically:YES]) {
+        EKWriteResult(@"error", [NSString stringWithFormat:
+            @"Could not write %@ (errno %d).", p, errno]);
+        return 1;
+    }
+    chmod(p.fileSystemRepresentation, 0644);
+
+    NSUInteger off = 0;
+    for (NSDictionary *e in clean.allValues) {
+        if ([e[@"tweakInjectionDisabled"] boolValue]) off++;
+    }
+    EKLog(@"choicy: saved %lu app entr%@, %lu with tweaks off",
+          (unsigned long)clean.count, clean.count == 1 ? @"y" : @"ies", (unsigned long)off);
+    EKWriteResult(markerEnabled(markerPath()) ? @"enabled" : @"disabled",
+                  @"Per-app settings saved. They apply the next time each app starts.");
+    return 0;
+}
+
 static void EKWriteResult(NSString *state, NSString *message) {
     NSString *path = EKPanelBootstrapPath(@EKPANEL_RESULT_PATH);
     if (path == nil) path = @EKPANEL_RESULT_PATH;
@@ -74,6 +124,7 @@ static void EKWriteResult(NSString *state, NSString *message) {
         @EKPANEL_RESULT_LOGGING : @(EKPanelLoggingEnabled()),
         @EKPANEL_RESULT_LOGSIZE : @(fileSize(EKPanelLogPath())),
         @EKPANEL_RESULT_JETSAM : jetsamTable(),
+        @EKPANEL_RESULT_CHOICY : choicySettings(),
     };
     [d writeToFile:path atomically:YES];
     chmod(path.fileSystemRepresentation, 0644);
@@ -186,6 +237,15 @@ static int applyAction(NSString *action, NSDictionary *request) {
               pid, on ? @"OFF" : @"ON");
         kill(pid, SIGTERM);
         return 0;
+    }
+
+    if ([action isEqualToString:@EKPANEL_ACTION_CHOICY]) {
+        NSDictionary *table = request[@"choicy"];
+        if (![table isKindOfClass:[NSDictionary class]]) {
+            EKWriteResult(@"error", @"The request had no per-app settings.");
+            return 1;
+        }
+        return applyChoicy(table);
     }
 
     if ([action isEqualToString:@EKPANEL_ACTION_JETSAM]) {

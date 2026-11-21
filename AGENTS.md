@@ -92,3 +92,14 @@ outside: `bootstrap_look_up("com.opa334.jailbreakd")` returns 1102
 (BOOTSTRAP_UNKNOWN_SERVICE) and `jbclient_platform_jbsettings_set_double`
 returns -1, so there is nothing to sync with. The addend table above is the
 knob that actually works on this device.
+
+- **Per-app injection** — a list of apps with per-app tweak control. It does not
+  reimplement anything: it edits the settings of **Choicy**
+  (`com.opa334.choicys`, MIT licence, https://github.com/opa334/Choicy),
+  whose injected dylib reads `/var/mobile/Library/Preferences/com.opa334.choicyprefs.plist`
+  (a path it holds as a string) and skips tweaks per app. The table is
+  `appSettings[bundleID] = { tweakInjectionDisabled, customTweakConfigurationEnabled,
+  allowDenyMode, allowedTweaks, deniedTweaks }`. Choicy's enforcement dylib is
+  not vendored here: it ships with the Choicy package, and the app only writes
+  the file Choicy reads. The app cannot write it itself (another domain, under
+  the app sandbox), so the helper does, keeping Choicy's other keys.

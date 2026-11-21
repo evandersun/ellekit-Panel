@@ -15,5 +15,6 @@
 #define EKPANEL_RESULT_LOGGING  "logging"   // @YES when the log is on
 #define EKPANEL_RESULT_LOGSIZE  "logSize"   // bytes
 #define EKPANEL_RESULT_JETSAM   "jetsam"    // { process path : megabytes }
+#define EKPANEL_RESULT_CHOICY   "choicy"    // Choicy appSettings
 
 #endif /* EKPANELD_H */
